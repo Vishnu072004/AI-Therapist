@@ -73,49 +73,79 @@ app.add_middleware(
 )
 
 # Request/Response models
+class Message(BaseModel):
+    role: str  # 'user' or 'assistant'
+    content: str
+
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=500, description="User's message")
+    conversation_history: list[Message] = Field(default=[], description="Previous conversation")
 
 class ChatResponse(BaseModel):
     sentiment: str
     response: str
     is_crisis: bool = False
 
-# Persona definitions
+# ---
+# PROMPT IMPROVEMENT 1: Detailed Personas
+# These now include specific therapeutic techniques and conversational tones.
+# ---
 PERSONAS = {
     "Anxiety": (
-        "You are a calm, grounding AI therapist. Your goal is to validate the "
-        "user's anxious feelings and gently help them feel more present."
+        "You are an AI therapist with a calm, grounding, and patient tone. "
+        "Your primary goal is to help the user feel safe and present. "
+        "Use techniques like: "
+        "1. **Validation:** 'It makes perfect sense that you're feeling anxious about that.' "
+        "2. **Grounding:** Gently bring them to the present. 'I'm right here with you. Can you describe one thing you see in the room?' "
+        "3. **Gentle Reframing:** 'I hear that 'what if' worry. What is one thing you know to be true right now?' "
+        "Always be reassuring and move at the user's pace."
     ),
     "Depression": (
-        "You are an empathetic, patient, and warm AI therapist. Your goal is to "
-        "acknowledge the user's pain, validate their feelings, and create a "
-        "safe, non-judgmental space."
+        "You are an AI therapist with a deeply empathetic, warm, and non-judgmental presence. "
+        "Your goal is to validate the user's pain and provide a space for them to talk without feeling like a burden. "
+        "Use techniques like: "
+        "1. **Deep Validation:** 'That sounds incredibly heavy and exhausting. It's okay to feel this way.' "
+        "2. **Self-Compassion:** 'Be gentle with yourself. You're dealing with a lot.' "
+        "3. **Behavioral Activation (Gently):** 'There's no pressure at all, but I'm curious, what's one small thing that might bring you even a moment of comfort?' "
+        "Focus on listening, not 'fixing'."
     ),
     "Suicidal": (
-        "**CRITICAL SAFETY RESPONSE:** You are an AI focused on crisis intervention. "
-        "Your ONLY goal is to respond with immediate, non-judgmental support "
-        "and provide a crisis hotline."
+        "**CRITICAL SAFETY RESPONSE:** This sentiment triggers a hardcoded crisis response. "
+        "This persona text is a fallback, but the code will return CRISIS_RESPONSE instead."
     ),
     "Stress": (
-        "You are a supportive and practical AI therapist. Your goal is to "
-        "validate the user's feelings of being overwhelmed and gently help "
-        "them identify the source of their stress."
+        "You are an AI therapist who is supportive, practical, and a little more structured. "
+        "Your goal is to validate their 'overwhelmed' feeling and help them untangle their thoughts. "
+        "Use techniques like: "
+        "1. **Validation & Normalization:** 'It's completely understandable that you're feeling stressed with so much on your plate.' "
+        "2. **Problem-Solving (Gently):** 'That is a lot to handle. I'm wondering if we could look at one of those things together?' "
+        "3. **Somatic Check-in:** 'Where are you feeling that stress in your body right now?' "
+        "Help the user break down large problems into smaller, more manageable pieces."
     ),
     "Bipolar": (
-        "You are a stable, non-judgmental AI therapist. Your goal is to "
-        "listen and calmly reflect the user's feelings, without getting "
-        "pulled into emotional highs or lows. Be a stable anchor."
+        "You are an AI therapist who is exceptionally stable, consistent, and non-judgmental. "
+        "Your goal is to be a 'stable anchor' for the user, regardless of their emotional state (high or low). "
+        "Use techniques like: "
+        "1. **Reflective Listening:** 'What I'm hearing you say is that your thoughts are moving very quickly right now.' "
+        "2. **Calm Reflection:** 'It sounds like you have a huge amount of energy today.' or 'It sounds like things are feeling very flat and difficult right now.' "
+        "3. **Avoid Matching Intensity:** Do not get overly excited during mania or overly somber during depression. Maintain a consistent, calm, supportive tone."
     ),
-    "Personality disorder": (
-        "You are a consistent, clear, and boundaried AI therapist. "
-        "Your goal is to offer validation for the user's intense emotions "
-        "while maintaining a stable, supportive presence."
+    "Personality disorder": ( # Renamed to "Emotional Intensity" for the frontend
+        "You are an AI therapist focused on validation and emotional regulation, in the style of DBT. "
+        "Your goal is to validate the *intense pain* behind the user's feelings without necessarily validating destructive actions. "
+        "Use techniques like: "
+        "1. **Radical Validation:** 'It must be so painful to feel that way. I hear how much you're hurting.' "
+        "2. **Emotional Labeling:** 'It sounds like you're feeling [e.g., betrayed, terrified, empty]. Is that right?' "
+        "3. **Maintain Boundaries:** Remain consistently supportive, calm, and non-judgmental, even if the user expresses anger. 'I'm here to listen, and I'm not going anywhere.'"
     ),
     "Normal": (
-        "You are a friendly and positive AI therapist. The user seems to be "
-        "in a good state. Your goal is to engage with them in a light, "
-        "encouraging, and affirmative way."
+        "You are an AI therapist who is encouraging and curious, in the style of Positive Psychology. "
+        "The user is in a good state. Your goal is to help them explore their strengths, values, and positive experiences. "
+        "Use techniques like: "
+        "1. **Reflective Engagement:** 'That sounds like a great experience. What part of that felt best for you?' "
+        "2. **Strength-Spotting:** 'It sounds like you handled that with a lot of [e.g., resilience, kindness].' "
+        "3. **Exploring Values:** 'What about that activity do you find most meaningful?' "
+        "Be a warm, engaged, and affirmative listener."
     )
 }
 
@@ -150,61 +180,95 @@ def get_sentiment(text: str) -> str:
         logger.error(f"Error in sentiment analysis: {e}")
         raise HTTPException(status_code=500, detail="Sentiment analysis failed")
 
-def generate_response(sentiment: str, user_input: str) -> tuple[str, bool]:
-    """Generate therapeutic response based on sentiment"""
+# In main.py
+# REPLACE your old generate_response function with this one
+
+def generate_response(sentiment: str, user_input: str, history: list[Message]) -> tuple[str, bool]:
+    """Generate therapeutic response based on sentiment and conversation history"""
     
-    # Handle crisis situations
     if sentiment == "Suicidal":
         return CRISIS_RESPONSE, True
     
     try:
-        persona = PERSONAS.get(sentiment, "You are a helpful and kind AI therapist.")
+        persona = PERSONAS.get(sentiment, PERSONAS["Normal"]) # Default to "Normal"
         
-        prompt_template = [
-            {"role": "user", "content": f"""
-**Instructions:** Adopt this persona: '{persona}'. 
-Read the user's statement, generate a short (2-3 sentence) empathetic response.
-**CRITICAL:** Do NOT give medical advice or a diagnosis. 
-End with one gentle, open-ended question.
+        system_prompt = f"""
+        **Your Role:** You are 'MindfulAI', a compassionate AI therapist.
+        **Your Persona:** {persona}
+        
+        **Core Instructions:**
+        1.  **Tone:** Use a warm, human-like, and non-clinical tone. Be empathetic and patient. Speak *to* the user, not *at* them.
+        2.  **Context:** Respond directly to the user's last message, but use the *entire conversation history* for context, memory, and continuity.
+        3.  **Length:** Write a concise, thoughtful response (usually 2-4 sentences). Avoid long paragraphs.
+        4.  **No Advice:** **CRITICAL:** Do NOT give medical advice, diagnoses, or 'fixes'. Do not use phrases like "You should..." or "Try to..."
+        5.  **Questioning:** Conclude your response with **one** gentle, open-ended question or a reflective prompt to encourage the user to share more. (e.g., "How does that feeling sit with you?", "What's coming up for you as you say that?", "Can you tell me more about that?").
+        
+        **Example of a good response:**
+        User: "i feel awful today, just so empty."
+        You: "That sounds like a very heavy and painful feeling. I'm really glad you're here and sharing that with me. Can you tell me more about that feeling of emptiness?"
+        """
+        
+        # ---
+        # FIX IS HERE
+        # ---
+        
+        # 1. Convert Pydantic models to dicts, standardizing role & skipping the first welcome message
+        chat_history = []
+        if history: # Only loop if history is not empty
+            # Start from the 2nd message (index 1) to skip the initial "Hello..."
+            for msg in history[1:]: 
+                # Standardize role: 'assistant' (from frontend) becomes 'model' (for Gemma)
+                role = "model" if msg.role == "assistant" else "user"
+                # Fix Pydantic warning: use .model_dump() and get content
+                chat_history.append({"role": role, "content": msg.content})
 
-**User's Statement:** "{user_input}"
-"""},
+        # 2. Add the new user input
+        chat_history.append({"role": "user", "content": user_input})
+
+        # 3. Create the final prompt list, starting with our system prompt and prime
+        final_chat_list = [
+            {"role": "user", "content": system_prompt},
+            {"role": "model", "content": "I understand. I'm here to listen and support you. What's on your mind?"},
+            *chat_history  # Add the rest of the processed history
         ]
-        
+        # ---
+        # END OF FIX
+        # ---
+
         tokenizer = models['gen_tokenizer']
         model = models['gen_model']
         
         prompt = tokenizer.apply_chat_template(
-            prompt_template, 
+            final_chat_list, 
             tokenize=False, 
             add_generation_prompt=True
         )
         
         inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
         
+        prompt_length = inputs.input_ids.shape[1]
+        
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
                 max_new_tokens=150,
                 do_sample=True,
-                temperature=0.7,
+                temperature=0.75,
                 top_k=50,
                 top_p=0.95,
                 pad_token_id=tokenizer.eos_token_id
             )
         
-        response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-        
-        # Extract only the model's response
-        if "model\n" in response:
-            response = response.split("model\n")[-1]
-        elif prompt in response:
-            response = response[len(prompt):].strip()
+        generated_ids = outputs[0][prompt_length:]
+        response = tokenizer.decode(generated_ids, skip_special_tokens=True)
         
         return response.strip(), False
         
     except Exception as e:
         logger.error(f"Error in response generation: {e}")
+        # Log the problematic chat list for debugging
+        if 'final_chat_list' in locals():
+            logger.error(f"Problematic chat list: {final_chat_list}")
         raise HTTPException(status_code=500, detail="Response generation failed")
 
 @app.get("/")
@@ -228,12 +292,14 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=400, detail="Message cannot be empty")
     
     try:
-        # Detect sentiment
         sentiment = get_sentiment(request.message)
         logger.info(f"Detected sentiment: {sentiment}")
         
-        # Generate response
-        response, is_crisis = generate_response(sentiment, request.message)
+        response, is_crisis = generate_response(
+            sentiment, 
+            request.message, 
+            request.conversation_history
+        )
         
         # Sanitize sentiment label for frontend
         display_sentiment = sentiment
